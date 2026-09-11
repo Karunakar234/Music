@@ -5,12 +5,36 @@
 //  Created by Karunakar Katraju on 9/10/26.
 //
 
+import AVFoundation
+import Observation
+#if canImport(ShazamKit)
+import ShazamKit
+#endif
 import SwiftUI
+import UniformTypeIdentifiers
+import UserNotifications
 
 struct ContentView: View {
-    private let playlists = Playlist.sample
-    private let featuredAlbums = Album.sample
-    private let recentTracks = Track.sample
+    @State private var selectedTab: AppTab = .home
+    @State private var streamingPlayer = StreamingPlayer()
+    @State private var songRecognizer = SongRecognitionManager()
+    @State private var notificationManager = NotificationManager()
+    @State private var catalog = MusicCatalog.local
+    @State private var isImporterPresented = false
+    @State private var isHistoryPresented = false
+    @State private var isNotificationsPresented = false
+    @State private var isNowPlayingPresented = false
+    @State private var isSongIdentifierPresented = false
+    @State private var isSettingsPresented = false
+    @State private var importMessage: String?
+
+    init() {
+        _catalog = State(initialValue: .local)
+    }
+
+    fileprivate init(catalog: MusicCatalog) {
+        _catalog = State(initialValue: catalog)
+    }
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -21,18 +45,7 @@ struct ContentView: View {
             )
             .ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 26) {
-                    header
-                    categorySelector
-                    playlistGrid
-                    albumSection
-                    trackSection
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 12)
-                .padding(.bottom, 150)
-            }
+            activeScreen
 
             VStack(spacing: 0) {
                 miniPlayer
@@ -40,6 +53,164 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .fileImporter(
+            isPresented: $isImporterPresented,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: true,
+            onCompletion: handleImportResult
+        )
+        .sheet(isPresented: $isNotificationsPresented) {
+            NotificationsSheet(notificationManager: notificationManager)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isHistoryPresented) {
+            ListeningHistorySheet(catalog: catalog, streamingPlayer: streamingPlayer)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isNowPlayingPresented) {
+            if let track = streamingPlayer.currentTrack ?? catalog.tracks.first {
+                NowPlayingSheet(track: track, tracks: catalog.tracks, streamingPlayer: streamingPlayer)
+                    .presentationDetents([.large])
+            }
+        }
+        .sheet(isPresented: $isSongIdentifierPresented) {
+            SongIdentifierSheet(songRecognizer: songRecognizer)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $isSettingsPresented) {
+            SettingsSheet(
+                catalog: catalog,
+                currentTrack: streamingPlayer.currentTrack,
+                importMessage: importMessage,
+                onImport: {
+                    isSettingsPresented = false
+                    isImporterPresented = true
+                },
+                onReload: {
+                    catalog = MusicCatalog.local
+                    importMessage = "Library reloaded"
+                }
+            )
+            .presentationDetents([.medium, .large])
+        }
+    }
+
+    @ViewBuilder
+    private var activeScreen: some View {
+        switch selectedTab {
+        case .home:
+            homeScreen
+        case .search:
+            SearchScreen(
+                catalog: catalog,
+                streamingPlayer: streamingPlayer,
+                onIdentifySong: {
+                    isSongIdentifierPresented = true
+                }
+            )
+        case .library:
+            LibraryScreen(
+                catalog: catalog,
+                streamingPlayer: streamingPlayer,
+                onImport: {
+                    isImporterPresented = true
+                }
+            )
+        }
+    }
+
+    private var homeScreen: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 26) {
+                header
+                localSongStatus
+                identifySongButton
+                categorySelector
+                playlistGrid
+                albumSection
+                trackSection
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 12)
+            .padding(.bottom, 150)
+        }
+    }
+
+    private var localSongStatus: some View {
+        HStack(spacing: 10) {
+            Label(importMessage ?? catalog.sourceMessage, systemImage: catalog.usesLocalTracks ? "checkmark.circle.fill" : "folder")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(catalog.usesLocalTracks ? .green : .white.opacity(0.68))
+                .lineLimit(1)
+
+            Spacer()
+
+            Button {
+                isImporterPresented = true
+            } label: {
+                Label("Load", systemImage: "tray.and.arrow.down.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(Color.green)
+                    .clipShape(Capsule())
+            }
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
+        .frame(height: 38)
+        .background(Color.white.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private var identifySongButton: some View {
+        Button {
+            isSongIdentifierPresented = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform.badge.magnifyingglass")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(.black)
+                    .frame(width: 40, height: 40)
+                    .background(Color.green)
+                    .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Identify Song")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(.white)
+                    Text("Listen nearby and find the song title")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.68))
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.1))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func handleImportResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            do {
+                let importedCount = try ImportedSongStore.importFiles(from: urls)
+                catalog = MusicCatalog.local
+                importMessage = importedCount == 1 ? "Imported 1 song" : "Imported \(importedCount) songs"
+            } catch {
+                importMessage = "Import failed: \(error.localizedDescription)"
+            }
+        case .failure(let error):
+            importMessage = "Import failed: \(error.localizedDescription)"
+        }
     }
 
     private var header: some View {
@@ -59,9 +230,15 @@ struct ContentView: View {
 
             Spacer()
 
-            headerButton(systemName: "bell")
-            headerButton(systemName: "clock")
-            headerButton(systemName: "gearshape")
+            headerButton(systemName: "bell") {
+                isNotificationsPresented = true
+            }
+            headerButton(systemName: "clock") {
+                isHistoryPresented = true
+            }
+            headerButton(systemName: "gearshape") {
+                isSettingsPresented = true
+            }
         }
     }
 
@@ -75,7 +252,7 @@ struct ContentView: View {
 
     private var playlistGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            ForEach(playlists) { playlist in
+            ForEach(catalog.playlists) { playlist in
                 PlaylistTile(playlist: playlist)
             }
         }
@@ -89,7 +266,7 @@ struct ContentView: View {
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: 16) {
-                    ForEach(featuredAlbums) { album in
+                    ForEach(catalog.albums) { album in
                         AlbumCard(album: album)
                     }
                 }
@@ -103,38 +280,64 @@ struct ContentView: View {
                 .font(.title2.weight(.bold))
                 .foregroundStyle(.white)
 
-            VStack(spacing: 14) {
-                ForEach(recentTracks) { track in
-                    TrackRow(track: track)
+            LazyVStack(spacing: 14) {
+                ForEach(catalog.tracks) { track in
+                    TrackRow(
+                        track: track,
+                        isPlaying: streamingPlayer.currentTrack?.id == track.id && streamingPlayer.isPlaying,
+                        onPlay: {
+                            streamingPlayer.play(track)
+                        }
+                    )
                 }
             }
         }
     }
 
     private var miniPlayer: some View {
-        HStack(spacing: 12) {
-            AlbumArtwork(colors: [.green, .teal], iconName: "waveform", size: 46)
+        Group {
+            if let displayTrack = streamingPlayer.currentTrack ?? catalog.tracks.first {
+                VStack(spacing: 6) {
+                    Button {
+                        isNowPlayingPresented = true
+                    } label: {
+                        HStack(spacing: 12) {
+                            AlbumArtwork(colors: displayTrack.colors, iconName: displayTrack.iconName, size: 46)
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text("After Hours")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text("The Weeknd")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
-                    .lineLimit(1)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(displayTrack.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                                Text(streamingPlayer.statusText(for: displayTrack))
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.72))
+                                    .lineLimit(1)
+                            }
+
+                            Spacer()
+
+                            Image(systemName: "hifispeaker.2")
+                                .font(.system(size: 19, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.86))
+
+                            Button {
+                                streamingPlayer.togglePlayback()
+                            } label: {
+                                Image(systemName: streamingPlayer.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 36, height: 36)
+                            }
+                            .accessibilityLabel(Text(streamingPlayer.isPlaying ? "Pause" : "Play"))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text("Open now playing"))
+
+                    PlaybackTimeline(streamingPlayer: streamingPlayer, showsLabels: false)
+                }
             }
-
-            Spacer()
-
-            Image(systemName: "hifispeaker.2")
-                .font(.system(size: 19, weight: .medium))
-                .foregroundStyle(.white.opacity(0.86))
-
-            Image(systemName: "play.fill")
-                .font(.system(size: 24, weight: .bold))
-                .foregroundStyle(.white)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -146,9 +349,9 @@ struct ContentView: View {
 
     private var tabBar: some View {
         HStack {
-            TabBarItem(title: "Home", systemName: "house.fill", isSelected: true)
-            TabBarItem(title: "Search", systemName: "magnifyingglass", isSelected: false)
-            TabBarItem(title: "Library", systemName: "books.vertical.fill", isSelected: false)
+            TabBarItem(tab: .home, selectedTab: $selectedTab)
+            TabBarItem(tab: .search, selectedTab: $selectedTab)
+            TabBarItem(tab: .library, selectedTab: $selectedTab)
         }
         .padding(.top, 10)
         .padding(.horizontal, 18)
@@ -156,8 +359,8 @@ struct ContentView: View {
         .background(.black.opacity(0.94))
     }
 
-    private func headerButton(systemName: String) -> some View {
-        Button(action: {}) {
+    private func headerButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundStyle(.white)
@@ -167,179 +370,6 @@ struct ContentView: View {
     }
 }
 
-private struct CategoryPill: View {
-    let title: String
-    let isSelected: Bool
-
-    var body: some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(isSelected ? .black : .white)
-            .padding(.horizontal, 16)
-            .frame(height: 34)
-            .background(isSelected ? Color.green : Color.white.opacity(0.13))
-            .clipShape(Capsule())
-    }
-}
-
-private struct PlaylistTile: View {
-    let playlist: Playlist
-
-    var body: some View {
-        HStack(spacing: 10) {
-            AlbumArtwork(colors: playlist.colors, iconName: playlist.iconName, size: 58)
-
-            Text(playlist.title)
-                .font(.subheadline.weight(.bold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.85)
-
-            Spacer(minLength: 0)
-        }
-        .frame(height: 58)
-        .background(Color.white.opacity(0.11))
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-}
-
-private struct AlbumCard: View {
-    let album: Album
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            AlbumArtwork(colors: album.colors, iconName: album.iconName, size: 138)
-
-            Text(album.title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .frame(width: 138, alignment: .leading)
-
-            Text(album.subtitle)
-                .font(.caption)
-                .foregroundStyle(.white.opacity(0.64))
-                .lineLimit(2)
-                .frame(width: 138, alignment: .leading)
-        }
-        .frame(width: 138, alignment: .leading)
-    }
-}
-
-private struct TrackRow: View {
-    let track: Track
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AlbumArtwork(colors: track.colors, iconName: track.iconName, size: 50)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(track.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text(track.artist)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.62))
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            Button(action: {}) {
-                Image(systemName: "ellipsis")
-                    .font(.headline)
-                    .foregroundStyle(.white.opacity(0.8))
-                    .frame(width: 32, height: 32)
-            }
-            .accessibilityLabel(Text("More options"))
-        }
-    }
-}
-
-private struct TabBarItem: View {
-    let title: String
-    let systemName: String
-    let isSelected: Bool
-
-    var body: some View {
-        Button(action: {}) {
-            VStack(spacing: 5) {
-                Image(systemName: systemName)
-                    .font(.system(size: 22, weight: .semibold))
-                Text(title)
-                    .font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(isSelected ? .white : .white.opacity(0.55))
-            .frame(maxWidth: .infinity)
-        }
-        .accessibilityLabel(Text(title))
-    }
-}
-
-private struct AlbumArtwork: View {
-    let colors: [Color]
-    let iconName: String
-    let size: CGFloat
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: size, height: size)
-            .overlay(
-                Image(systemName: iconName)
-                    .font(.system(size: size * 0.34, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.9))
-            )
-    }
-}
-
-private struct Playlist: Identifiable {
-    let id = UUID()
-    let title: String
-    let iconName: String
-    let colors: [Color]
-
-    static let sample = [
-        Playlist(title: "Liked Songs", iconName: "heart.fill", colors: [.purple, .blue]),
-        Playlist(title: "Daily Mix 1", iconName: "music.note", colors: [.orange, .pink]),
-        Playlist(title: "Discover Weekly", iconName: "sparkles", colors: [.green, .mint]),
-        Playlist(title: "Chill Hits", iconName: "moon.stars.fill", colors: [.indigo, .cyan]),
-        Playlist(title: "Top Artists", iconName: "person.2.fill", colors: [.red, .orange]),
-        Playlist(title: "Release Radar", iconName: "dot.radiowaves.left.and.right", colors: [.teal, .blue])
-    ]
-}
-
-private struct Album: Identifiable {
-    let id = UUID()
-    let title: String
-    let subtitle: String
-    let iconName: String
-    let colors: [Color]
-
-    static let sample = [
-        Album(title: "Late Night Drive", subtitle: "Synth pop and neon favorites", iconName: "car.fill", colors: [.pink, .purple]),
-        Album(title: "Focus Flow", subtitle: "Instrumentals for deep work", iconName: "brain.head.profile", colors: [.blue, .teal]),
-        Album(title: "Fresh Finds", subtitle: "New songs picked for you", iconName: "leaf.fill", colors: [.green, .yellow]),
-        Album(title: "Acoustic Morning", subtitle: "Soft songs to start slow", iconName: "guitars.fill", colors: [.brown, .orange])
-    ]
-}
-
-private struct Track: Identifiable {
-    let id = UUID()
-    let title: String
-    let artist: String
-    let iconName: String
-    let colors: [Color]
-
-    static let sample = [
-        Track(title: "Blinding Lights", artist: "The Weeknd", iconName: "sun.max.fill", colors: [.red, .orange]),
-        Track(title: "Levitating", artist: "Dua Lipa", iconName: "sparkle", colors: [.purple, .pink]),
-        Track(title: "As It Was", artist: "Harry Styles", iconName: "circle.grid.cross.fill", colors: [.cyan, .blue]),
-        Track(title: "Anti-Hero", artist: "Taylor Swift", iconName: "star.fill", colors: [.indigo, .mint])
-    ]
-}
-
 #Preview {
-    ContentView()
+    ContentView(catalog: .preview)
 }
